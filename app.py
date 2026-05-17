@@ -40,6 +40,43 @@ def api_search():
         pattern = r'\b' + re.escape(word.lower()) + r'\b'
         return re.search(pattern, title.lower()) is not None
 
+    def contains_substring(title, word):
+        return word.lower() in title.lower()
+
+    def calc_score(title, words, match_fn):
+        title_lower = title.lower()
+        score = 0
+        matched_count = 0
+        case_sensitive_match = False
+        for word in words:
+            if match_fn(title, word):
+                matched_count += 1
+            if word in title:
+                case_sensitive_match = True
+        score += (matched_count / len(words)) * 50
+        if matched_count > 0:
+            positions = []
+            for word in words:
+                idx = title_lower.find(word.lower())
+                if idx != -1:
+                    positions.append(idx)
+            if positions:
+                half = len(title_lower) / 2
+                all_first = all(p < half for p in positions)
+                some_first = any(p < half for p in positions)
+                if all_first:
+                    score += 25
+                elif some_first:
+                    score += 15
+                else:
+                    score += 5
+        q_joined = ' '.join(words).lower()
+        if q_joined in title_lower:
+            score += 25
+        if case_sensitive_match:
+            score += 5
+        return round(score)
+
     # === 整词匹配 + 交集 ===
     def build_intersection(limit):
         intersection = None
@@ -95,26 +132,35 @@ def api_search():
             if len(result_set) == 0:
                 break
 
-    # 整词交集 >1（无法进一步缩小）→ 返回交集内结果
+    # 整词交集 >1（无法进一步缩小）→ 计算评分，按分值排序后返回
     if len(result_set) > 1:
-        results = []
+        scored = []
         for e in all_entries:
             if e.get('number') in result_set:
-                results.append(e)
-                if len(results) >= 30:
-                    break
+                s = calc_score(e.get('title', '') or '', words, contains_whole_word)
+                entry = dict(e)
+                entry['score'] = s
+                scored.append((entry, s))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        results = [x[0] for x in scored[:30]]
         return jsonify({'query': q, 'count': len(results), 'results': results})
 
-    # === Fallback 1: 子串匹配（所有查询单词子串都匹配）===
+    # === Fallback 1: 子串匹配（所有查询单词子串都匹配）→ 评分排序 ===
     sub_matches = []
     for e in all_entries:
         title_lower = (e.get('title', '') or '').lower()
         if all(w.lower() in title_lower for w in words):
             sub_matches.append(e)
-            if len(sub_matches) >= 30:
-                break
     if sub_matches:
-        return jsonify({'query': q, 'count': len(sub_matches), 'results': sub_matches})
+        scored = []
+        for e in sub_matches:
+            s = calc_score(e.get('title', '') or '', words, contains_substring)
+            entry = dict(e)
+            entry['score'] = s
+            scored.append((entry, s))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        results = [x[0] for x in scored[:30]]
+        return jsonify({'query': q, 'count': len(results), 'results': results})
 
     # === Fallback 2: 作者搜索 ===
     q_lower = q.lower()

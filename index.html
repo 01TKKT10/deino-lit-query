@@ -55,6 +55,15 @@
         .num { font-size: 0.8rem; font-weight: 700; color: var(--primary); background: #eef5ee; padding: 2px 10px; border-radius: 12px; }
         .year { font-size: 0.78rem; color: var(--accent); font-weight: 600; background: #fdf6e3; padding: 2px 10px; border-radius: 12px; }
         .pmid-tag { font-size: 0.78rem; color: var(--text-light); }
+        .score {
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: var(--primary);
+            background: #e8f0e8;
+            padding: 2px 10px;
+            border-radius: 12px;
+            margin-left: auto;
+        }
         .card h3 { font-size: 1.05rem; font-weight: 600; line-height: 1.45; margin-bottom: 6px; }
         .card:hover h3 { color: var(--primary); }
         .card .authors { font-size: 0.88rem; color: var(--text-light); }
@@ -159,6 +168,38 @@
             $('status').innerHTML = '<p>数据库加载失败，请刷新页面重试</p>';
         });
 
+        // 新增：评分函数
+        function calcScore(title, words, matchFn) {
+            const titleLower = title.toLowerCase();
+            let score = 0;
+            let matchedCount = 0;
+            let caseSensitiveMatch = false;
+            for (const word of words) {
+                if (matchFn(title, word)) matchedCount++;
+                if (title.includes(word)) caseSensitiveMatch = true;
+            }
+            score += (matchedCount / words.length) * 50;
+            if (matchedCount > 0) {
+                const positions = [];
+                for (const word of words) {
+                    const idx = titleLower.indexOf(word.toLowerCase());
+                    if (idx !== -1) positions.push(idx);
+                }
+                if (positions.length > 0) {
+                    const half = titleLower.length / 2;
+                    const allFirst = positions.every(p => p < half);
+                    const someFirst = positions.some(p => p < half);
+                    if (allFirst) score += 25;
+                    else if (someFirst) score += 15;
+                    else score += 5;
+                }
+            }
+            const qJoined = words.join(' ').toLowerCase();
+            if (titleLower.includes(qJoined)) score += 25;
+            if (caseSensitiveMatch) score += 5;
+            return Math.round(score);
+        }
+
         // 搜索 — v5 整词匹配 + 交集 + 子串 fallback
         function search(query) {
             if (!DB || !query) return [];
@@ -248,24 +289,34 @@
                 }
             }
 
-            // 整词交集 >1（无法进一步缩小）→ 返回交集内结果
+            // 整词交集 >1（无法进一步缩小）→ 计算评分，按分值排序后返回
             if (resultSet.size > 1) {
-                const results = [];
+                const scored = [];
                 for (const entry of allEntries) {
                     if (resultSet.has(entry.number)) {
-                        results.push(entry);
-                        if (results.length >= 30) break;
+                        const score = calcScore(entry.title, words, containsWholeWord);
+                        scored.push({ entry, score });
                     }
                 }
-                return results;
+                scored.sort((a, b) => b.score - a.score);
+                return scored.slice(0, 30).map(s => {
+                    s.entry._score = s.score;
+                    return s.entry;
+                });
             }
 
-            // === Fallback 1: 子串匹配（所有查询单词子串都匹配）===
+            // === Fallback 1: 子串匹配（所有查询单词子串都匹配）→ 评分排序 ===
             let subMatches = allEntries.filter(e => {
                 return words.every(w => containsSubstring(e.title, w));
             });
             if (subMatches.length > 0) {
-                return subMatches.slice(0, 30);
+                const scored = subMatches.map(entry => {
+                    const score = calcScore(entry.title, words, containsSubstring);
+                    entry._score = score;
+                    return entry;
+                });
+                scored.sort((a, b) => b._score - a._score);
+                return scored.slice(0, 30);
             }
 
             // === Fallback 2: 作者搜索 ===
@@ -317,6 +368,7 @@
                         '<span class="num">#' + e.number + '</span>' +
                         (e.year ? '<span class="year">' + e.year + '</span>' : '') +
                         '<span class="pmid-tag">PMID: ' + e.pmid + '</span>' +
+                        (e._score !== undefined ? '<span class="score">匹配度: ' + e._score + '</span>' : '') +
                     '</div>' +
                     '<h3>' + hl(e.title, q) + '</h3>' +
                     '<p class="authors">' + hl(e.authors, q) + '</p>' +
