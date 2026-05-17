@@ -31,7 +31,7 @@ def open_browser():
 
 if __name__ == '__main__':
     print('=' * 55)
-    print('  Deinococcus radiodurans 文献查询系统 v2')
+    print('  Deinococcus radiodurans 文献查询系统 v5.1')
     print('=' * 55)
 
     for f in ['index.html', 'database.json']:
