@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deinococcus radiodurans 文献库</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #1a5f2a; --primary-light: #2d8a3e; --primary-dark: #0d3d18;
+            --accent: #d4a843; --bg: #f5f3ef; --card: #fff;
+            --text: #2c2c2c; --text-light: #5a5a5a; --border: #d8d4cc;
+            --shadow: 0 2px 12px rgba(0,0,0,0.08); --shadow-h: 0 4px 20px rgba(0,0,0,0.12);
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+        .container { max-width: 960px; margin: 0 auto; padding: 0 20px; }
+        header { text-align: center; padding: 48px 0 32px; }
+        header h1 { font-size: 2rem; font-weight: 700; color: var(--primary-dark); }
+        .subtitle { color: var(--text-light); margin-top: 8px; font-size: 0.95rem; }
+        .subtitle strong { color: var(--primary); }
+
+        .search-box { display: flex; gap: 12px; margin-bottom: 24px; }
+        input[type="text"] {
+            flex: 1; padding: 14px 18px; font-size: 1rem; border: 2px solid var(--border);
+            border-radius: 8px; outline: none; transition: all 0.25s;
+        }
+        input[type="text"]:focus { border-color: var(--primary-light); box-shadow: 0 0 0 3px rgba(26,95,42,0.1); }
+        button {
+            display: flex; align-items: center; gap: 6px; padding: 14px 24px;
+            font-size: 1rem; font-weight: 600; color: #fff; background: var(--primary);
+            border: none; border-radius: 8px; cursor: pointer; transition: all 0.25s;
+        }
+        button:hover { background: var(--primary-dark); transform: translateY(-1px); }
+
+        .tips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+        .tips span { font-size: 0.82rem; color: #999; margin-right: 4px; }
+        .tip {
+            font-size: 0.82rem; padding: 4px 12px; background: #eef5ee;
+            color: var(--primary); border-radius: 20px; cursor: pointer; transition: all 0.25s;
+        }
+        .tip:hover { background: var(--primary); color: #fff; }
+
+        .status { text-align: center; padding: 40px; color: var(--text-light); }
+        .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: s 0.8s linear infinite; margin: 0 auto 12px; }
+        @keyframes s { to { transform: rotate(360deg); } }
+
+        .result-info { font-size: 0.88rem; color: var(--text-light); margin-bottom: 16px; }
+        .card {
+            background: var(--card); border-radius: 10px; padding: 18px 22px;
+            box-shadow: var(--shadow); cursor: pointer; transition: all 0.25s;
+            border: 1px solid transparent; margin-bottom: 12px;
+        }
+        .card:hover { box-shadow: var(--shadow-h); border-color: var(--primary-light); transform: translateY(-2px); }
+        .card-head { display: flex; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
+        .num { font-size: 0.8rem; font-weight: 700; color: var(--primary); background: #eef5ee; padding: 2px 10px; border-radius: 12px; }
+        .year { font-size: 0.78rem; color: var(--accent); font-weight: 600; background: #fdf6e3; padding: 2px 10px; border-radius: 12px; }
+        .pmid-tag { font-size: 0.78rem; color: var(--text-light); }
+        .card h3 { font-size: 1.05rem; font-weight: 600; line-height: 1.45; margin-bottom: 6px; }
+        .card:hover h3 { color: var(--primary); }
+        .card .authors { font-size: 0.88rem; color: var(--text-light); }
+        .card .journal { font-size: 0.82rem; color: #888; font-style: italic; }
+        mark { background: #ffe066; padding: 1px 3px; border-radius: 3px; }
+
+        .modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.4); backdrop-filter: blur(4px); }
+        .content { position: relative; background: var(--card); border-radius: 10px; max-width: 800px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.2); animation: m 0.3s ease; }
+        @keyframes m { from { opacity: 0; transform: translateY(20px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        .close-btn { position: absolute; top: 12px; right: 16px; width: 36px; height: 36px; border: none; background: #f0f0f0; border-radius: 50%; font-size: 1.4rem; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 10; }
+        .close-btn:hover { background: #e0e0e0; }
+        .detail { padding: 28px 32px; }
+        .detail-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; padding-bottom: 14px; border-bottom: 2px solid var(--primary-light); }
+        .detail-num { font-size: 0.85rem; font-weight: 700; color: var(--primary); }
+        .links { display: flex; gap: 8px; }
+        .links a { display: inline-block; padding: 6px 14px; font-size: 0.82rem; font-weight: 600; text-decoration: none; border-radius: 6px; transition: all 0.25s; }
+        .links a:first-child { background: var(--primary); color: #fff; }
+        .links a:first-child:hover { background: var(--primary-dark); }
+        .links a:last-child { background: #eef5ee; color: var(--primary); }
+        .links a:last-child:hover { background: var(--primary); color: #fff; }
+        .detail h2 { font-size: 1.3rem; font-weight: 700; line-height: 1.45; margin-bottom: 12px; }
+        .detail .meta { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 20px; font-size: 0.88rem; color: var(--text-light); }
+        .detail .meta strong { color: var(--text); }
+        .abstract-box { background: #faf9f7; border-radius: 8px; padding: 20px 22px; border-left: 4px solid var(--accent); }
+        .abstract-box h4 { font-size: 0.85rem; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+        .abstract-box p { font-size: 0.95rem; line-height: 1.7; text-align: justify; }
+        .mesh { margin-top: 16px; }
+        .mesh span { display: inline-block; font-size: 0.78rem; padding: 3px 10px; background: #eef5ee; color: var(--primary); border-radius: 12px; margin: 3px; }
+
+        footer { text-align: center; padding: 40px 0; font-size: 0.82rem; color: #aaa; }
+        .hidden { display: none !important; }
+
+        @media (max-width: 600px) {
+            header h1 { font-size: 1.5rem; }
+            .search-box { flex-direction: column; }
+            .content { max-height: 95vh; }
+            .detail { padding: 20px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Deinococcus radiodurans 文献库</h1>
+            <p class="subtitle">耐辐射奇球菌研究文献检索系统 | 共收录 <strong id="total">—</strong> 篇文献</p>
+        </header>
+
+        <div class="search-box">
+            <input type="text" id="q" placeholder="输入序号(1-1344)、标题关键词、作者名或PMID...">
+            <button id="btn">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>
+                搜索
+            </button>
+        </div>
+
+        <div class="tips">
+            <span>快速查询:</span>
+            <div class="tip" data-q="189">#189</div>
+            <div class="tip" data-q="RecA">RecA</div>
+            <div class="tip" data-q="deinoxanthin">deinoxanthin</div>
+            <div class="tip" data-q="PprI">PprI</div>
+            <div class="tip" data-q="辐射">辐射</div>
+        </div>
+
+        <div id="status" class="status">
+            <div class="spinner"></div>
+            <p>正在加载文献数据库...</p>
+        </div>
+
+        <div id="results"></div>
+
+        <div id="modal" class="modal hidden">
+            <div class="overlay"></div>
+            <div class="content">
+                <button class="close-btn">&times;</button>
+                <div id="detail" class="detail"></div>
+            </div>
+        </div>
+
+        <footer>耐辐射奇球菌研究 | Deinococcus radiodurans Research Database</footer>
+    </div>
+
+    <script>
+    (function() {
+        let DB = null;
+        const $ = id => document.getElementById(id);
+        const esc = t => t.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+        const hl = (t, q) => {
+            if (!q) return esc(t);
+            const r = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+            return esc(t).replace(r, '<mark>$1</mark>');
+        };
+
+        // 加载数据库
+        fetch('database.json').then(r => r.json()).then(data => {
+            DB = data;
+            $('total').textContent = Object.keys(DB).length;
+            $('status').innerHTML = '<p>数据库加载完成！请输入序号或关键词搜索</p>';
+            $('q').focus();
+        }).catch(() => {
+            $('status').innerHTML = '<p>数据库加载失败，请刷新页面重试</p>';
+        });
+
+        // 搜索 — 单词独立检索 + 投票计数 + 逐轮核对唯一性
+        function search(query) {
+            if (!DB || !query) return [];
+            const q = query.trim();
+            // 精确序号匹配
+            if (/^\d+$/.test(q) && DB[q]) return [DB[q]];
+
+            const words = q.split(/\s+/).filter(w => w.length > 0);
+            if (words.length === 0) return [];
+
+            const allEntries = Object.values(DB);
+            const BATCH_SIZE = 8;
+
+            // 投票计数器：number → { entry, count }
+            const voteMap = new Map();
+
+            function addVotes(word) {
+                const w = word.toLowerCase();
+                for (const entry of allEntries) {
+                    if (entry.title.toLowerCase().includes(w)) {
+                        const num = entry.number;
+                        if (voteMap.has(num)) {
+                            voteMap.get(num).count += 1;
+                        } else {
+                            voteMap.set(num, { entry: entry, count: 1 });
+                        }
+                    }
+                }
+            }
+
+            function findUniqueMax() {
+                let maxCount = -1;
+                let maxItems = [];
+                for (const v of voteMap.values()) {
+                    if (v.count > maxCount) {
+                        maxCount = v.count;
+                        maxItems = [v];
+                    } else if (v.count === maxCount) {
+                        maxItems.push(v);
+                    }
+                }
+                return maxItems.length === 1 ? maxItems[0] : null;
+            }
+
+            function getTopN(n) {
+                const sorted = Array.from(voteMap.values()).sort((a, b) => b.count - a.count);
+                return sorted.slice(0, n).map(v => v.entry);
+            }
+
+            // 先处理前8个单词（或全部单词，取最小值）
+            const initialCount = Math.min(words.length, BATCH_SIZE);
+            for (let i = 0; i < initialCount; i++) {
+                addVotes(words[i]);
+            }
+
+            // 核对：最高票数是否唯一
+            let winner = findUniqueMax();
+            if (winner) return [winner.entry];
+
+            // 不唯一 → 逐轮增加第9个、第10个...单词
+            for (let i = BATCH_SIZE; i < words.length; i++) {
+                addVotes(words[i]);
+                winner = findUniqueMax();
+                if (winner) return [winner.entry];
+            }
+
+            // 所有单词用完仍不唯一 → 按票数排序，返回前30
+            let results = getTopN(30);
+            if (results.length > 0) return results;
+
+            // === Fallback 搜索 ===
+            const qLower = q.toLowerCase();
+            // 作者搜索
+            for (const entry of allEntries) {
+                if (entry.authors.toLowerCase().includes(qLower)) {
+                    results.push(entry);
+                    if (results.length >= 30) break;
+                }
+            }
+            if (results.length === 0) {
+                // PMID 精确匹配
+                for (const entry of allEntries) {
+                    if (entry.pmid === q) {
+                        results.push(entry);
+                        break;
+                    }
+                }
+            }
+            if (results.length === 0) {
+                // 摘要全文匹配
+                for (const entry of allEntries) {
+                    if (entry.abstract.toLowerCase().includes(qLower)) {
+                        results.push(entry);
+                        if (results.length >= 30) break;
+                    }
+                }
+            }
+            return results;
+        }
+
+        function render() {
+            const q = $('q').value.trim();
+            const results = search(q);
+            const out = $('results');
+
+            if (!results.length) {
+                out.innerHTML = '<div class="status">未找到与 "' + esc(q) + '" 相关的文献</div>';
+                $('status').classList.add('hidden');
+                return;
+            }
+
+            $('status').classList.add('hidden');
+            let h = '<div class="result-info">找到 ' + results.length + ' 条结果</div>';
+
+            results.forEach(e => {
+                h += '<div class="card" data-num="' + e.number + '">' +
+                    '<div class="card-head">' +
+                        '<span class="num">#' + e.number + '</span>' +
+                        (e.year ? '<span class="year">' + e.year + '</span>' : '') +
+                        '<span class="pmid-tag">PMID: ' + e.pmid + '</span>' +
+                    '</div>' +
+                    '<h3>' + hl(e.title, q) + '</h3>' +
+                    '<p class="authors">' + hl(e.authors, q) + '</p>' +
+                    '<p class="journal">' + esc(e.journal) + '</p>' +
+                '</div>';
+            });
+            out.innerHTML = h;
+
+            if (results.length === 1) show(results[0]);
+        }
+
+        function show(e) {
+            const pmidLink = 'https://pubmed.ncbi.nlm.nih.gov/' + e.pmid + '/';
+            const doiLink = e.doi ? 'https://doi.org/' + e.doi : '';
+
+            let h = '<div class="detail-head">' +
+                '<span class="detail-num">文献 #' + e.number + '</span>' +
+                '<div class="links">' +
+                    '<a href="' + pmidLink + '" target="_blank">PubMed</a>' +
+                    (doiLink ? '<a href="' + doiLink + '" target="_blank">DOI</a>' : '') +
+                '</div></div>' +
+                '<h2>' + esc(e.title) + '</h2>' +
+                '<p class="authors">' + esc(e.authors) + '</p>' +
+                '<div class="meta">' +
+                    '<span><strong>期刊:</strong> ' + esc(e.journal) + '</span>' +
+                    (e.year ? '<span><strong>年份:</strong> ' + e.year + '</span>' : '') +
+                    '<span><strong>PMID:</strong> ' + e.pmid + '</span>' +
+                    (e.pmcid ? '<span><strong>PMCID:</strong> ' + e.pmcid + '</span>' : '') +
+                    (e.doi ? '<span><strong>DOI:</strong> ' + e.doi + '</span>' : '') +
+                '</div>' +
+                '<div class="abstract-box">' +
+                    '<h4>Abstract</h4>' +
+                    '<p>' + esc(e.abstract) + '</p>' +
+                '</div>';
+
+            if (e.mesh_terms && e.mesh_terms.length) {
+                h += '<div class="mesh"><h4>MeSH Terms</h4>';
+                e.mesh_terms.forEach(t => { h += '<span>' + esc(t) + '</span>'; });
+                h += '</div>';
+            }
+
+            $('detail').innerHTML = h;
+            $('modal').classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function hide() { $('modal').classList.add('hidden'); document.body.style.overflow = ''; }
+
+        // 事件绑定
+        $('btn').addEventListener('click', render);
+        $('q').addEventListener('keypress', e => { if (e.key === 'Enter') render(); });
+        document.querySelectorAll('.tip').forEach(t => {
+            t.addEventListener('click', () => { $('q').value = t.dataset.q; render(); });
+        });
+        $('results').addEventListener('click', e => {
+            const c = e.target.closest('.card');
+            if (c && c.dataset.num) show(DB[c.dataset.num]);
+        });
+        document.querySelector('.close-btn').addEventListener('click', hide);
+        document.querySelector('.overlay').addEventListener('click', hide);
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') hide(); });
+    })();
+    </script>
+</body>
+</html>

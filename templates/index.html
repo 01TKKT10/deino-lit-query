@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deinococcus radiodurans 文献库 | 学术查询系统</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <header class="header">
+            <h1>Deinococcus radiodurans 文献库</h1>
+            <p class="subtitle">耐辐射奇球菌研究文献检索系统 | 共收录 <strong>{{ total }}</strong> 篇文献</p>
+        </header>
+
+        <!-- 搜索区域 -->
+        <div class="search-section">
+            <div class="search-box">
+                <input 
+                    type="text" 
+                    id="searchInput" 
+                    placeholder="输入序号(1-1344)、标题关键词、作者名或PMID进行搜索..."
+                    autocomplete="off"
+                >
+                <button id="searchBtn" onclick="performSearch()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <path d="m21 21-4.35-4.35"></path>
+                    </svg>
+                    搜索
+                </button>
+            </div>
+            <div class="search-tips">
+                <span class="tip">示例:</span>
+                <span class="tip-tag" onclick="quickSearch('189')">序号 189</span>
+                <span class="tip-tag" onclick="quickSearch('RecA')">RecA</span>
+                <span class="tip-tag" onclick="quickSearch('deinoxanthin')">deinoxanthin</span>
+                <span class="tip-tag" onclick="quickSearch('PprI')">PprI</span>
+                <span class="tip-tag" onclick="quickSearch('Daly')">作者 Daly</span>
+            </div>
+        </div>
+
+        <!-- 加载指示 -->
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <p>正在搜索...</p>
+        </div>
+
+        <!-- 搜索结果 -->
+        <div id="results" class="results"></div>
+
+        <!-- 文献详情（模态框） -->
+        <div id="detailModal" class="modal hidden">
+            <div class="modal-overlay" onclick="closeModal()"></div>
+            <div class="modal-content">
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+                <div id="detailBody"></div>
+            </div>
+        </div>
+
+        <!-- 页脚 -->
+        <footer class="footer">
+            <p>耐辐射奇球菌研究 | Deinococcus radiodurans Research Database</p>
+        </footer>
+    </div>
+
+    <script>
+        const searchInput = document.getElementById('searchInput');
+        const searchBtn = document.getElementById('searchBtn');
+        const loading = document.getElementById('loading');
+        const resultsDiv = document.getElementById('results');
+        const detailModal = document.getElementById('detailModal');
+        const detailBody = document.getElementById('detailBody');
+
+        // 回车搜索
+        searchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') performSearch();
+        });
+
+        function quickSearch(q) {
+            searchInput.value = q;
+            performSearch();
+        }
+
+        async function performSearch() {
+            const query = searchInput.value.trim();
+            if (!query) return;
+
+            loading.classList.remove('hidden');
+            resultsDiv.innerHTML = '';
+
+            try {
+                const response = await fetch('/api/search?q=' + encodeURIComponent(query));
+                const data = await response.json();
+                renderResults(data, query);
+            } catch (err) {
+                resultsDiv.innerHTML = '<div class="error">搜索出错，请重试</div>';
+            } finally {
+                loading.classList.add('hidden');
+            }
+        }
+
+        function renderResults(data, query) {
+            if (data.error) {
+                resultsDiv.innerHTML = `<div class="error">${data.error}</div>`;
+                return;
+            }
+
+            if (data.count === 0) {
+                resultsDiv.innerHTML = `<div class="no-results">未找到与 "${escapeHtml(query)}" 相关的文献</div>`;
+                return;
+            }
+
+            const isSingle = data.count === 1;
+            let html = `<div class="result-count">找到 ${data.count} 条结果</div>`;
+
+            html += '<div class="result-list">';
+            data.results.forEach(entry => {
+                html += renderEntryCard(entry);
+            });
+            html += '</div>';
+
+            resultsDiv.innerHTML = html;
+
+            // 如果只有一个结果，自动展开详情
+            if (isSingle && data.results[0]) {
+                showDetail(data.results[0]);
+            }
+        }
+
+        function renderEntryCard(entry) {
+            const num = entry.number || '';
+            const title = entry.title || '[无标题]';
+            const authors = entry.authors || '';
+            const journal = entry.journal || '';
+            const year = entry.year || '';
+            const pmid = entry.pmid || '';
+            const doi = entry.doi || '';
+
+            // 高亮显示
+            const query = searchInput.value.trim().toLowerCase();
+
+            return `
+                <div class="entry-card" onclick="fetchAndShowDetail(${num})">
+                    <div class="entry-header">
+                        <span class="entry-number">#${num}</span>
+                        ${year ? `<span class="entry-year">${year}</span>` : ''}
+                        ${pmid ? `<span class="entry-pmid">PMID: ${pmid}</span>` : ''}
+                    </div>
+                    <h3 class="entry-title">${highlightText(title, query)}</h3>
+                    <p class="entry-authors">${highlightText(authors, query)}</p>
+                    ${journal ? `<p class="entry-journal">${journal}</p>` : ''}
+                    ${doi ? `<p class="entry-doi">DOI: ${doi}</p>` : ''}
+                </div>
+            `;
+        }
+
+        async function fetchAndShowDetail(num) {
+            try {
+                const response = await fetch('/api/entry/' + num);
+                const entry = await response.json();
+                if (!entry.error) showDetail(entry);
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function showDetail(entry) {
+            const num = entry.number || '';
+            const title = entry.title || '[无标题]';
+            const authors = entry.authors || '';
+            const journal = entry.journal || '';
+            const year = entry.year || '';
+            const pmid = entry.pmid || '';
+            const pmcid = entry.pmcid || '';
+            const doi = entry.doi || '';
+            const abstract = entry.abstract || '[无摘要]';
+
+            const pmidLink = pmid ? `https://pubmed.ncbi.nlm.nih.gov/${pmid}/` : '';
+            const doiLink = doi ? `https://doi.org/${doi}` : '';
+
+            detailBody.innerHTML = `
+                <div class="detail-header">
+                    <span class="detail-number">文献 #${num}</span>
+                    <div class="detail-actions">
+                        ${pmidLink ? `<a href="${pmidLink}" target="_blank" class="btn-link">PubMed</a>` : ''}
+                        ${doiLink ? `<a href="${doiLink}" target="_blank" class="btn-link">DOI链接</a>` : ''}
+                    </div>
+                </div>
+                <h2 class="detail-title">${title}</h2>
+                <p class="detail-authors">${authors}</p>
+                <div class="detail-meta">
+                    ${journal ? `<span class="meta-item"><strong>期刊:</strong> ${journal}</span>` : ''}
+                    ${year ? `<span class="meta-item"><strong>年份:</strong> ${year}</span>` : ''}
+                    ${pmid ? `<span class="meta-item"><strong>PMID:</strong> ${pmid}</span>` : ''}
+                    ${pmcid ? `<span class="meta-item"><strong>PMCID:</strong> ${pmcid}</span>` : ''}
+                    ${doi ? `<span class="meta-item"><strong>DOI:</strong> ${doi}</span>` : ''}
+                </div>
+                <div class="detail-abstract">
+                    <h4>摘要</h4>
+                    <p>${abstract}</p>
+                </div>
+            `;
+            detailModal.classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeModal() {
+            detailModal.classList.add('hidden');
+            document.body.style.overflow = '';
+        }
+
+        function highlightText(text, query) {
+            if (!query) return escapeHtml(text);
+            const regex = new RegExp('(' + escapeRegex(query) + ')', 'gi');
+            return escapeHtml(text).replace(regex, '<mark>$1</mark>');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function escapeRegex(string) {
+            return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        // ESC关闭模态框
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeModal();
+        });
+    </script>
+</body>
+</html>
