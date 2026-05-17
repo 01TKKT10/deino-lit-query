@@ -159,7 +159,7 @@
             $('status').innerHTML = '<p>数据库加载失败，请刷新页面重试</p>';
         });
 
-        // 搜索 — 单词独立检索 + 投票计数 + 逐轮核对唯一性
+        // 搜索 — v5 整词匹配 + 交集 + 子串 fallback
         function search(query) {
             if (!DB || !query) return [];
             const q = query.trim();
@@ -172,88 +172,114 @@
             const allEntries = Object.values(DB);
             const BATCH_SIZE = 8;
 
-            // 投票计数器：number → { entry, count }
-            const voteMap = new Map();
+            // === 整词匹配函数（\b 词边界）===
+            function containsWholeWord(title, word) {
+                const regex = new RegExp('\\b' + word.toLowerCase() + '\\b', 'i');
+                return regex.test(title);
+            }
 
-            function addVotes(word) {
-                const w = word.toLowerCase();
-                for (const entry of allEntries) {
-                    if (entry.title.toLowerCase().includes(w)) {
-                        const num = entry.number;
-                        if (voteMap.has(num)) {
-                            voteMap.get(num).count += 1;
-                        } else {
-                            voteMap.set(num, { entry: entry, count: 1 });
+            // === 子串匹配函数（fallback 用）===
+            function containsSubstring(title, word) {
+                return title.toLowerCase().includes(word.toLowerCase());
+            }
+
+            // === 整词匹配 + 交集 ===
+            function buildIntersection(limit) {
+                let intersection = null;
+                for (let i = 0; i < limit; i++) {
+                    const word = words[i];
+                    const matches = new Set();
+                    for (const entry of allEntries) {
+                        if (containsWholeWord(entry.title, word)) {
+                            matches.add(entry.number);
                         }
                     }
-                }
-            }
-
-            function findUniqueMax() {
-                let maxCount = -1;
-                let maxItems = [];
-                for (const v of voteMap.values()) {
-                    if (v.count > maxCount) {
-                        maxCount = v.count;
-                        maxItems = [v];
-                    } else if (v.count === maxCount) {
-                        maxItems.push(v);
+                    if (matches.size === 0) {
+                        return new Set(); // 某个单词无整词匹配，交集为空
+                    }
+                    if (intersection === null) {
+                        intersection = matches;
+                    } else {
+                        intersection = new Set([...intersection].filter(x => matches.has(x)));
                     }
                 }
-                return maxItems.length === 1 ? maxItems[0] : null;
+                return intersection || new Set();
             }
 
-            function getTopN(n) {
-                const sorted = Array.from(voteMap.values()).sort((a, b) => b.count - a.count);
-                return sorted.slice(0, n).map(v => v.entry);
+            // 先用前 BATCH_SIZE 个单词（或全部，如果更少）
+            let resultSet = buildIntersection(Math.min(words.length, BATCH_SIZE));
+
+            // 检查：交集是否唯一
+            if (resultSet.size === 1) {
+                return [DB[[...resultSet][0]]];
             }
 
-            // 先处理前8个单词（或全部单词，取最小值）
-            const initialCount = Math.min(words.length, BATCH_SIZE);
-            for (let i = 0; i < initialCount; i++) {
-                addVotes(words[i]);
+            // 不唯一且还有剩余单词 → 逐轮增加
+            if (resultSet.size > 1 && words.length > BATCH_SIZE) {
+                for (let i = BATCH_SIZE; i < words.length; i++) {
+                    const word = words[i];
+                    const matches = new Set();
+                    for (const entry of allEntries) {
+                        if (containsWholeWord(entry.title, word)) {
+                            matches.add(entry.number);
+                        }
+                    }
+                    if (matches.size === 0) {
+                        resultSet = new Set();
+                        break;
+                    }
+                    resultSet = new Set([...resultSet].filter(x => matches.has(x)));
+                    if (resultSet.size === 1) {
+                        return [DB[[...resultSet][0]]];
+                    }
+                    if (resultSet.size === 0) break;
+                }
             }
 
-            // 核对：最高票数是否唯一
-            let winner = findUniqueMax();
-            if (winner) return [winner.entry];
-
-            // 不唯一 → 逐轮增加第9个、第10个...单词
-            for (let i = BATCH_SIZE; i < words.length; i++) {
-                addVotes(words[i]);
-                winner = findUniqueMax();
-                if (winner) return [winner.entry];
+            // 整词交集 >1（无法进一步缩小）→ 返回交集内结果
+            if (resultSet.size > 1) {
+                const results = [];
+                for (const entry of allEntries) {
+                    if (resultSet.has(entry.number)) {
+                        results.push(entry);
+                        if (results.length >= 30) break;
+                    }
+                }
+                return results;
             }
 
-            // 所有单词用完仍不唯一 → 按票数排序，返回前30
-            let results = getTopN(30);
-            if (results.length > 0) return results;
+            // === Fallback 1: 子串匹配（所有查询单词子串都匹配）===
+            let subMatches = allEntries.filter(e => {
+                return words.every(w => containsSubstring(e.title, w));
+            });
+            if (subMatches.length > 0) {
+                return subMatches.slice(0, 30);
+            }
 
-            // === Fallback 搜索 ===
+            // === Fallback 2: 作者搜索 ===
             const qLower = q.toLowerCase();
-            // 作者搜索
+            let results = [];
             for (const entry of allEntries) {
                 if (entry.authors.toLowerCase().includes(qLower)) {
                     results.push(entry);
                     if (results.length >= 30) break;
                 }
             }
-            if (results.length === 0) {
-                // PMID 精确匹配
-                for (const entry of allEntries) {
-                    if (entry.pmid === q) {
-                        results.push(entry);
-                        break;
-                    }
+            if (results.length > 0) return results;
+
+            // === Fallback 3: PMID 精确匹配 ===
+            for (const entry of allEntries) {
+                if (entry.pmid === q) {
+                    return [entry];
                 }
             }
-            if (results.length === 0) {
-                // 摘要全文匹配
-                for (const entry of allEntries) {
-                    if (entry.abstract.toLowerCase().includes(qLower)) {
-                        results.push(entry);
-                        if (results.length >= 30) break;
-                    }
+
+            // === Fallback 4: 摘要全文匹配 ===
+            results = [];
+            for (const entry of allEntries) {
+                if (entry.abstract.toLowerCase().includes(qLower)) {
+                    results.push(entry);
+                    if (results.length >= 30) break;
                 }
             }
             return results;

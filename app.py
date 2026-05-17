@@ -17,7 +17,7 @@ def index():
 
 @app.route('/api/search')
 def api_search():
-    """搜索API — 单词独立检索 + 投票计数 + 逐轮核对唯一性"""
+    """搜索API — v5 整词匹配 + 交集 + 子串 fallback"""
     query = request.args.get('q', '').strip()
     if not query:
         return jsonify({'error': '请输入查询内容'})
@@ -33,91 +33,105 @@ def api_search():
     if not words:
         return jsonify({'query': q, 'count': 0, 'results': []})
 
-    # === 投票计数 + 唯一性核对 ===
-    from collections import defaultdict
-    vote_map = defaultdict(lambda: {'entry': None, 'count': 0})
     BATCH_SIZE = 8
 
-    def add_votes(word):
-        w = word.lower()
+    # === 整词匹配函数（\b 词边界）===
+    def contains_whole_word(title, word):
+        pattern = r'\b' + re.escape(word.lower()) + r'\b'
+        return re.search(pattern, title.lower()) is not None
+
+    # === 整词匹配 + 交集 ===
+    def build_intersection(limit):
+        intersection = None
+        for i in range(limit):
+            word = words[i]
+            matches = set()
+            for e in all_entries:
+                if contains_whole_word(e.get('title', '') or '', word):
+                    matches.add(e.get('number'))
+            if not matches:
+                return set()  # 某个单词无整词匹配，交集为空
+            if intersection is None:
+                intersection = matches
+            else:
+                intersection = intersection & matches
+        return intersection or set()
+
+    # 先用前 BATCH_SIZE 个单词（或全部，如果更少）
+    result_set = build_intersection(min(len(words), BATCH_SIZE))
+
+    # 检查：交集是否唯一
+    if len(result_set) == 1:
+        num = list(result_set)[0]
         for e in all_entries:
-            title = (e.get('title', '') or '').lower()
-            if w in title:
-                num = e.get('number')
-                vote_map[num]['entry'] = e
-                vote_map[num]['count'] += 1
+            if e.get('number') == num:
+                return jsonify({'query': q, 'count': 1, 'results': [e]})
 
-    def find_unique_max():
-        if not vote_map:
-            return None
-        max_count = max(v['count'] for v in vote_map.values())
-        max_items = [v for v in vote_map.values() if v['count'] == max_count]
-        return max_items[0] if len(max_items) == 1 else None
+    # 不唯一且还有剩余单词 → 逐轮增加
+    if len(result_set) > 1 and len(words) > BATCH_SIZE:
+        for i in range(BATCH_SIZE, len(words)):
+            word = words[i]
+            matches = set()
+            for e in all_entries:
+                if contains_whole_word(e.get('title', '') or '', word):
+                    matches.add(e.get('number'))
+            if not matches:
+                result_set = set()
+                break
+            result_set = result_set & matches
+            if len(result_set) == 1:
+                num = list(result_set)[0]
+                for e in all_entries:
+                    if e.get('number') == num:
+                        return jsonify({'query': q, 'count': 1, 'results': [e]})
+            if len(result_set) == 0:
+                break
 
-    def get_top_n(n):
-        sorted_items = sorted(vote_map.values(), key=lambda x: x['count'], reverse=True)
-        return [v['entry'] for v in sorted_items[:n]]
+    # 整词交集 >1（无法进一步缩小）→ 返回交集内结果
+    if len(result_set) > 1:
+        results = []
+        for e in all_entries:
+            if e.get('number') in result_set:
+                results.append(e)
+                if len(results) >= 30:
+                    break
+        return jsonify({'query': q, 'count': len(results), 'results': results})
 
-    # 先处理前8个单词（或全部单词，取最小值）
-    initial_count = min(len(words), BATCH_SIZE)
-    for i in range(initial_count):
-        add_votes(words[i])
+    # === Fallback 1: 子串匹配（所有查询单词子串都匹配）===
+    sub_matches = []
+    for e in all_entries:
+        title_lower = (e.get('title', '') or '').lower()
+        if all(w.lower() in title_lower for w in words):
+            sub_matches.append(e)
+            if len(sub_matches) >= 30:
+                break
+    if sub_matches:
+        return jsonify({'query': q, 'count': len(sub_matches), 'results': sub_matches})
 
-    # 核对：最高票数是否唯一
-    winner = find_unique_max()
-    if winner:
-        return jsonify({
-            'query': q,
-            'count': 1,
-            'results': [winner['entry']]
-        })
-
-    # 不唯一 → 逐轮增加第9个、第10个...单词
-    for i in range(BATCH_SIZE, len(words)):
-        add_votes(words[i])
-        winner = find_unique_max()
-        if winner:
-            return jsonify({
-                'query': q,
-                'count': 1,
-                'results': [winner['entry']]
-            })
-
-    # 所有单词用完仍不唯一 → 按票数排序，返回前30
-    results = get_top_n(30)
-    if results:
-        return jsonify({
-            'query': q,
-            'count': len(results),
-            'results': results
-        })
-
-    # === Fallback 搜索 ===
+    # === Fallback 2: 作者搜索 ===
     q_lower = q.lower()
+    results = []
     for e in all_entries:
         if q_lower in (e.get('authors', '') or '').lower():
             results.append(e)
             if len(results) >= 30:
                 break
+    if results:
+        return jsonify({'query': q, 'count': len(results), 'results': results})
 
-    if not results:
-        for e in all_entries:
-            if e.get('pmid') == q:
-                results.append(e)
+    # === Fallback 3: PMID 精确匹配 ===
+    for e in all_entries:
+        if e.get('pmid') == q:
+            return jsonify({'query': q, 'count': 1, 'results': [e]})
+
+    # === Fallback 4: 摘要全文匹配 ===
+    results = []
+    for e in all_entries:
+        if q_lower in (e.get('abstract', '') or '').lower():
+            results.append(e)
+            if len(results) >= 30:
                 break
-
-    if not results:
-        for e in all_entries:
-            if q_lower in (e.get('abstract', '') or '').lower():
-                results.append(e)
-                if len(results) >= 30:
-                    break
-
-    return jsonify({
-        'query': q,
-        'count': len(results),
-        'results': results
-    })
+    return jsonify({'query': q, 'count': len(results), 'results': results})
 
 @app.route('/api/entry/<num>')
 def api_entry(num):
