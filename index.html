@@ -186,6 +186,8 @@
             // === 整词匹配 + 交集 ===
             function buildIntersection(limit) {
                 let intersection = null;
+                let lastNonEmpty = null;
+                
                 for (let i = 0; i < limit; i++) {
                     const word = words[i];
                     const matches = new Set();
@@ -195,12 +197,18 @@
                         }
                     }
                     if (matches.size === 0) {
-                        return new Set(); // 某个单词无整词匹配，交集为空
+                        return lastNonEmpty || new Set();
                     }
                     if (intersection === null) {
                         intersection = matches;
                     } else {
                         intersection = new Set([...intersection].filter(x => matches.has(x)));
+                    }
+                    if (intersection.size === 1) {
+                        return intersection;
+                    }
+                    if (intersection.size > 0) {
+                        lastNonEmpty = new Set(intersection);
                     }
                 }
                 return intersection || new Set();
@@ -216,6 +224,7 @@
 
             // 不唯一且还有剩余单词 → 逐轮增加
             if (resultSet.size > 1 && words.length > BATCH_SIZE) {
+                let lastNonEmpty = resultSet.size > 0 ? new Set(resultSet) : null;
                 for (let i = BATCH_SIZE; i < words.length; i++) {
                     const word = words[i];
                     const matches = new Set();
@@ -225,12 +234,15 @@
                         }
                     }
                     if (matches.size === 0) {
-                        resultSet = new Set();
+                        resultSet = lastNonEmpty || new Set();
                         break;
                     }
                     resultSet = new Set([...resultSet].filter(x => matches.has(x)));
                     if (resultSet.size === 1) {
                         return [DB[[...resultSet][0]]];
+                    }
+                    if (resultSet.size > 0) {
+                        lastNonEmpty = new Set(resultSet);
                     }
                     if (resultSet.size === 0) break;
                 }

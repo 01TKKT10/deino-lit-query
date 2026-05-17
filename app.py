@@ -43,6 +43,7 @@ def api_search():
     # === 整词匹配 + 交集 ===
     def build_intersection(limit):
         intersection = None
+        last_non_empty = None
         for i in range(limit):
             word = words[i]
             matches = set()
@@ -50,11 +51,15 @@ def api_search():
                 if contains_whole_word(e.get('title', '') or '', word):
                     matches.add(e.get('number'))
             if not matches:
-                return set()  # 某个单词无整词匹配，交集为空
+                return last_non_empty or set()
             if intersection is None:
                 intersection = matches
             else:
                 intersection = intersection & matches
+            if len(intersection) == 1:
+                return intersection
+            if len(intersection) > 0:
+                last_non_empty = set(intersection)
         return intersection or set()
 
     # 先用前 BATCH_SIZE 个单词（或全部，如果更少）
@@ -69,6 +74,7 @@ def api_search():
 
     # 不唯一且还有剩余单词 → 逐轮增加
     if len(result_set) > 1 and len(words) > BATCH_SIZE:
+        last_non_empty = set(result_set) if len(result_set) > 0 else None
         for i in range(BATCH_SIZE, len(words)):
             word = words[i]
             matches = set()
@@ -76,7 +82,7 @@ def api_search():
                 if contains_whole_word(e.get('title', '') or '', word):
                     matches.add(e.get('number'))
             if not matches:
-                result_set = set()
+                result_set = last_non_empty or set()
                 break
             result_set = result_set & matches
             if len(result_set) == 1:
@@ -84,6 +90,8 @@ def api_search():
                 for e in all_entries:
                     if e.get('number') == num:
                         return jsonify({'query': q, 'count': 1, 'results': [e]})
+            if len(result_set) > 0:
+                last_non_empty = set(result_set)
             if len(result_set) == 0:
                 break
 
