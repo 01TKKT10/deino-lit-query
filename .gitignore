@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Temporary dev files
+v6_app.py
+v6_core.py
+v6_test.py
+v7_app.py
+v8_app.py
+v6/
+
+# Data files (large, user-provided)
+*.zip
+
+# IDE
+.vscode/
+.idea/

@@ -158,6 +158,23 @@
             return esc(t).replace(r, '<mark>$1</mark>');
         };
 
+        // V8 引擎常量
+        const STOP_WORDS = new Set([
+            'the','a','an','is','are','was','were','be','been','being',
+            'have','has','had','do','does','did','will','would','could','should',
+            'may','might','can','shall','must','lt','gt',
+            'of','and','or','but','in','on','at','to','for','with','by',
+            'from','up','about','into','through','during','before','after',
+            'above','below','between','among','this','that','these','those',
+            'i','you','he','she','it','we','they','me','him','her','us','them',
+            'as','if','so','than','too','very','just','now','then','here',
+            'there','when','where','why','how','all','each','every','both',
+            'few','more','most','other','some','such','no','nor','not',
+            'only','own','same'
+        ]);
+        const BATCH_SIZE = 8;
+        const UNIQUE_THRESHOLD = 15;
+
         // 加载数据库
         fetch('database.json').then(r => r.json()).then(data => {
             DB = data;
@@ -168,186 +185,453 @@
             $('status').innerHTML = '<p>数据库加载失败，请刷新页面重试</p>';
         });
 
-        // 新增：评分函数
-        function calcScore(title, words, matchFn) {
+        // ═══════════════════════════════════════════════════════
+        // V8 查询清洗
+        // ═══════════════════════════════════════════════════════
+        function cleanQuery(query) {
+            let q = query.trim();
+
+            // 1. 去 UUID、前导数字
+            q = q.replace(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}_?/i, '');
+            q = q.replace(/^\d+[\-_\s]+/, '');
+            q = q.replace(/_/g, ' ');
+            q = q.replace(/(?<=[a-zA-Z])\-(?=[a-zA-Z])/g, ' ');
+
+            // 2. 提取年份
+            const yearMatch = q.match(/\b(19\d{2}|20\d{2})\b/);
+            const year = yearMatch ? parseInt(yearMatch[1]) : null;
+
+            // 3. 提取期刊名
+            const journalWords = [];
+            const sourceMatch = q.match(/\bSource\b/i);
+            const soMatch = q.match(/\bSO\s+\d{4}\b/i);
+            if (sourceMatch && soMatch) {
+                const journalRaw = q.substring(sourceMatch.index + sourceMatch[0].length, soMatch.index).trim();
+                for (const w of journalRaw.split(/\s+/)) {
+                    const clean = w.replace(/[^a-zA-Z]/g, '');
+                    if (clean && clean.length >= 2 && !STOP_WORDS.has(clean.toLowerCase())) {
+                        journalWords.push(clean);
+                    }
+                }
+            }
+
+            // 4. 清理 Source 及之后
+            if (sourceMatch) {
+                q = q.substring(0, sourceMatch.index);
+            }
+
+            // 5. 再次清理 SO YYYY
+            const soMatch2 = q.match(/\bSO\s+\d{4}\b/i);
+            if (soMatch2) {
+                q = q.substring(0, soMatch2.index);
+            }
+
+            // 6. 清理 HTML 实体
+            q = q.replace(/\blt\b|\bgt\b|\bi\b|\bb\b/gi, '');
+
+            // 7. 拆分清洗
+            const words = [];
+            for (const word of q.split(/\s+/)) {
+                let w = word;
+                while (w && ',.;:!?'.includes(w[w.length-1])) w = w.slice(0, -1);
+                while (w && ',.;:!?'.includes(w[0])) w = w.slice(1);
+                if (w) words.push(w);
+            }
+
+            // 8. 停用词过滤
+            const result = words.filter(w => !STOP_WORDS.has(w.toLowerCase()));
+            return { words: result, journalWords, year };
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // V8 匹配与评分函数
+        // ═══════════════════════════════════════════════════════
+        function containsWholeWord(title, word) {
+            if (!title || !word) return false;
+            try {
+                const pattern = '\\b' + word.toLowerCase() + '\\b';
+                return new RegExp(pattern, 'i').test(title);
+            } catch (e) { return false; }
+        }
+
+        function containsPrefixWord(title, word) {
+            if (!title || !word) return false;
+            try {
+                const pattern = '\\b' + word.toLowerCase() + '\\w*\\b';
+                return new RegExp(pattern, 'i').test(title);
+            } catch (e) { return false; }
+        }
+
+        function containsSubstring(title, word) {
+            if (!title || !word) return false;
+            return title.toLowerCase().includes(word.toLowerCase());
+        }
+
+        function getWordPositions(title, queryWords, matchFn) {
+            const titleLower = title.toLowerCase();
+            const positions = [];
+            for (const word of queryWords) {
+                if (!matchFn(title, word)) continue;
+                const wordLower = word.toLowerCase();
+                let pattern = '\\b' + wordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b';
+                if (word.length <= 4) {
+                    pattern = '\\b' + wordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\w*\\b';
+                }
+                const regex = new RegExp(pattern, 'gi');
+                const m = regex.exec(titleLower);
+                if (m) positions.push([word, m.index, m.index + m[0].length]);
+            }
+            return positions;
+        }
+
+        function calcPhraseBonus(title, words) {
+            const titleLower = title.toLowerCase();
+            let bonus = 0;
+            for (let i = 0; i < words.length - 1; i++) {
+                const phrase = words[i].toLowerCase() + ' ' + words[i+1].toLowerCase();
+                if (titleLower.includes(phrase)) bonus += 12;
+            }
+            for (let i = 0; i < words.length - 2; i++) {
+                const phrase = words[i].toLowerCase() + ' ' + words[i+1].toLowerCase() + ' ' + words[i+2].toLowerCase();
+                if (titleLower.includes(phrase)) bonus += 20;
+            }
+            return Math.min(bonus, 40);
+        }
+
+        function calcOrderScore(title, queryWords, matchFn) {
+            const positions = getWordPositions(title, queryWords, matchFn);
+            if (positions.length <= 1) return 0;
+            const starts = positions.map(p => p[1]);
+            const dp = starts.map(() => 1);
+            for (let i = 1; i < starts.length; i++) {
+                for (let j = 0; j < i; j++) {
+                    if (starts[i] > starts[j]) dp[i] = Math.max(dp[i], dp[j] + 1);
+                }
+            }
+            const orderScore = (Math.max(...dp) / queryWords.length) * 30;
+            let consecutiveBonus = 0;
+            for (let i = 1; i < positions.length; i++) {
+                const gap = positions[i][1] - positions[i-1][2];
+                if (gap === 0) consecutiveBonus += 3;
+                else if (gap <= 1) consecutiveBonus += 10;
+                else if (gap <= 5) consecutiveBonus += 7;
+                else if (gap <= 15) consecutiveBonus += 5;
+                else if (gap <= 30) consecutiveBonus += 2;
+            }
+            return Math.round(orderScore + Math.min(consecutiveBonus, 30));
+        }
+
+        function calcJournalScore(entryJournal, journalWords) {
+            if (!journalWords || !journalWords.length || !entryJournal) return 0;
+            let matched = 0;
+            for (const w of journalWords) {
+                if (containsPrefixWord(entryJournal, w)) matched++;
+            }
+            if (matched === 0) return 0;
+            let score = matched * 12;
+            if (matched === journalWords.length) score += 15;
+            return Math.min(score, 40);
+        }
+
+        function calcYearScore(entryYear, queryYear) {
+            if (queryYear === null || queryYear === undefined || entryYear === null || entryYear === undefined) return 0;
+            return entryYear == queryYear ? 25 : 0;
+        }
+
+        function calcScore(title, words, matchFn, journalWords, entryJournal, queryYear, entryYear) {
             const titleLower = title.toLowerCase();
             let score = 0;
             let matchedCount = 0;
             let caseSensitiveMatch = false;
+
             for (const word of words) {
                 if (matchFn(title, word)) matchedCount++;
                 if (title.includes(word)) caseSensitiveMatch = true;
             }
-            score += (matchedCount / words.length) * 50;
+
+            if (words.length > 0) {
+                score += (matchedCount / words.length) * 50;
+            }
+
             if (matchedCount > 0) {
-                const positions = [];
-                for (const word of words) {
-                    const idx = titleLower.indexOf(word.toLowerCase());
-                    if (idx !== -1) positions.push(idx);
-                }
+                const positions = getWordPositions(title, words, matchFn);
                 if (positions.length > 0) {
                     const half = titleLower.length / 2;
-                    const allFirst = positions.every(p => p < half);
-                    const someFirst = positions.some(p => p < half);
+                    const allFirst = positions.every(p => p[1] < half);
+                    const someFirst = positions.some(p => p[1] < half);
                     if (allFirst) score += 25;
                     else if (someFirst) score += 15;
                     else score += 5;
                 }
             }
+
             const qJoined = words.join(' ').toLowerCase();
             if (titleLower.includes(qJoined)) score += 25;
             if (caseSensitiveMatch) score += 5;
+
+            score += calcOrderScore(title, words, matchFn);
+            score += calcPhraseBonus(title, words);
+
+            if (matchedCount > 0 && words.length > 0) {
+                let coveredChars = 0;
+                for (const w of words) {
+                    if (matchFn(title, w)) coveredChars += w.length;
+                }
+                const titleLen = titleLower.replace(/\s/g, '').length;
+                if (titleLen > 0) score += Math.round(coveredChars / titleLen * 20);
+            }
+
+            if (journalWords && journalWords.length > 0 && entryJournal) {
+                score += calcJournalScore(entryJournal, journalWords);
+            }
+
+            if (queryYear !== null && queryYear !== undefined && entryYear !== null && entryYear !== undefined) {
+                score += calcYearScore(entryYear, queryYear);
+            }
+
             return Math.round(score);
         }
 
-        // 搜索 — v5 整词匹配 + 交集 + 子串 fallback
+        // ═══════════════════════════════════════════════════════
+        // V8 交集构建
+        // ═══════════════════════════════════════════════════════
+        function buildIntersectionStrict(entries, words, limit) {
+            let intersection = null;
+            let lastNonEmpty = null;
+            const failedWords = [];
+            for (let i = 0; i < limit; i++) {
+                const word = words[i];
+                const matches = new Set();
+                for (const e of entries) {
+                    if (containsWholeWord(e.title, word)) matches.add(String(e.number));
+                }
+                if (matches.size === 0) {
+                    failedWords.push(word);
+                    if (intersection !== null) {
+                        return { set: lastNonEmpty || new Set(), failedWords };
+                    }
+                    continue;
+                }
+                if (intersection === null) {
+                    intersection = matches;
+                } else {
+                    intersection = new Set([...intersection].filter(x => matches.has(x)));
+                }
+                if (intersection.size === 1) {
+                    return { set: intersection, failedWords };
+                }
+                if (intersection.size > 0) {
+                    lastNonEmpty = new Set(intersection);
+                }
+            }
+            return { set: intersection || new Set(), failedWords };
+        }
+
+        function buildIntersectionAllFuzzy(entries, words, limit) {
+            let intersection = null;
+            let lastNonEmpty = null;
+            for (let i = 0; i < limit; i++) {
+                const word = words[i];
+                const matches = new Set();
+                for (const e of entries) {
+                    if (containsPrefixWord(e.title, word)) matches.add(String(e.number));
+                }
+                if (matches.size === 0) {
+                    return lastNonEmpty || new Set();
+                }
+                if (intersection === null) {
+                    intersection = matches;
+                } else {
+                    intersection = new Set([...intersection].filter(x => matches.has(x)));
+                }
+                if (intersection.size === 1) {
+                    return intersection;
+                }
+                if (intersection.size > 0) {
+                    lastNonEmpty = new Set(intersection);
+                }
+            }
+            return intersection || new Set();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // V8 搜索主函数
+        // ═══════════════════════════════════════════════════════
         function search(query) {
             if (!DB || !query) return [];
             const q = query.trim();
-            // 精确序号匹配
-            if (/^\d+$/.test(q) && DB[q]) return [DB[q]];
 
-            const words = q.split(/\s+/).filter(w => w.length > 0);
-            if (words.length === 0) return [];
+            // 精确序号匹配
+            if (/^\d+$/.test(q) && DB[q]) {
+                const entry = Object.assign({}, DB[q]);
+                entry._score = 100;
+                entry._matchStatus = 'exact_number';
+                return [entry];
+            }
+
+            const { words, journalWords, year } = cleanQuery(q);
+            if (words.length === 0 && journalWords.length === 0 && year === null) {
+                return [];
+            }
 
             const allEntries = Object.values(DB);
-            const BATCH_SIZE = 8;
 
-            // === 整词匹配函数（\b 词边界）===
-            function containsWholeWord(title, word) {
-                const regex = new RegExp('\\b' + word.toLowerCase() + '\\b', 'i');
-                return regex.test(title);
-            }
+            // Phase 1: 严格整词交集
+            const { set: strictSet, failedWords } = buildIntersectionStrict(
+                allEntries, words, Math.min(words.length, BATCH_SIZE));
 
-            // === 子串匹配函数（fallback 用）===
-            function containsSubstring(title, word) {
-                return title.toLowerCase().includes(word.toLowerCase());
-            }
-
-            // === 整词匹配 + 交集 ===
-            function buildIntersection(limit) {
-                let intersection = null;
-                let lastNonEmpty = null;
-                
-                for (let i = 0; i < limit; i++) {
-                    const word = words[i];
-                    const matches = new Set();
-                    for (const entry of allEntries) {
-                        if (containsWholeWord(entry.title, word)) {
-                            matches.add(entry.number);
-                        }
-                    }
-                    if (matches.size === 0) {
-                        return lastNonEmpty || new Set();
-                    }
-                    if (intersection === null) {
-                        intersection = matches;
-                    } else {
-                        intersection = new Set([...intersection].filter(x => matches.has(x)));
-                    }
-                    if (intersection.size === 1) {
-                        return intersection;
-                    }
-                    if (intersection.size > 0) {
-                        lastNonEmpty = new Set(intersection);
-                    }
-                }
-                return intersection || new Set();
-            }
-
-            // 先用前 BATCH_SIZE 个单词（或全部，如果更少）
-            let resultSet = buildIntersection(Math.min(words.length, BATCH_SIZE));
-
-            // 检查：交集是否唯一
-            if (resultSet.size === 1) {
-                return [DB[[...resultSet][0]]];
-            }
-
-            // 不唯一且还有剩余单词 → 逐轮增加
-            if (resultSet.size > 1 && words.length > BATCH_SIZE) {
-                let lastNonEmpty = resultSet.size > 0 ? new Set(resultSet) : null;
+            // 剩余单词继续严格
+            if (strictSet.size > 1 && words.length > BATCH_SIZE) {
+                let lastNonEmpty = strictSet.size > 0 ? new Set(strictSet) : null;
                 for (let i = BATCH_SIZE; i < words.length; i++) {
                     const word = words[i];
                     const matches = new Set();
-                    for (const entry of allEntries) {
-                        if (containsWholeWord(entry.title, word)) {
-                            matches.add(entry.number);
-                        }
+                    for (const e of allEntries) {
+                        if (containsWholeWord(e.title, word)) matches.add(String(e.number));
                     }
                     if (matches.size === 0) {
-                        resultSet = lastNonEmpty || new Set();
+                        strictSet = lastNonEmpty || new Set();
                         break;
                     }
-                    resultSet = new Set([...resultSet].filter(x => matches.has(x)));
-                    if (resultSet.size === 1) {
-                        return [DB[[...resultSet][0]]];
-                    }
-                    if (resultSet.size > 0) {
-                        lastNonEmpty = new Set(resultSet);
-                    }
-                    if (resultSet.size === 0) break;
+                    strictSet = new Set([...strictSet].filter(x => matches.has(x)));
+                    if (strictSet.size === 1) break;
+                    if (strictSet.size > 0) lastNonEmpty = new Set(strictSet);
                 }
             }
 
-            // 整词交集 >1（无法进一步缩小）→ 计算评分，按分值排序后返回
-            if (resultSet.size > 1) {
+            if (strictSet.size === 1) {
+                const num = [...strictSet][0];
+                for (const e of allEntries) {
+                    if (String(e.number) === num) {
+                        const entry = Object.assign({}, e);
+                        entry._score = 100;
+                        entry._matchStatus = 'unique_match_strict';
+                        return [entry];
+                    }
+                }
+            }
+
+            // Phase 2: 前缀模糊交集
+            let fuzzySet = new Set();
+            if (strictSet.size === 0) {
+                fuzzySet = buildIntersectionAllFuzzy(allEntries, words, Math.min(words.length, BATCH_SIZE));
+            } else if (strictSet.size > 1 && failedWords.length > 0) {
+                fuzzySet = buildIntersectionAllFuzzy(allEntries, words, Math.min(words.length, BATCH_SIZE));
+            }
+
+            if (fuzzySet.size === 1) {
+                const num = [...fuzzySet][0];
+                for (const e of allEntries) {
+                    if (String(e.number) === num) {
+                        const entry = Object.assign({}, e);
+                        entry._score = 95;
+                        entry._matchStatus = failedWords.length > 0 ? 'unique_match_fuzzy' : 'unique_match_strict';
+                        return [entry];
+                    }
+                }
+            }
+
+            if (fuzzySet.size > 0) {
+                strictSet = fuzzySet;
+            }
+
+            // Phase 3: 综合评分排序
+            if (strictSet.size > 1) {
+                const matchFn = failedWords.length > 0 ? containsPrefixWord : containsWholeWord;
                 const scored = [];
-                for (const entry of allEntries) {
-                    if (resultSet.has(entry.number)) {
-                        const score = calcScore(entry.title, words, containsWholeWord);
-                        scored.push({ entry, score });
+                for (const e of allEntries) {
+                    if (strictSet.has(String(e.number))) {
+                        const s = calcScore(
+                            e.title || '', words, matchFn,
+                            journalWords, e.journal,
+                            year, e.year
+                        );
+                        const entry = Object.assign({}, e);
+                        entry._score = s;
+                        entry._matchStatus = 'multi_match';
+                        scored.push([entry, s]);
                     }
                 }
-                scored.sort((a, b) => b.score - a.score);
-                return scored.slice(0, 30).map(s => {
-                    s.entry._score = s.score;
-                    return s.entry;
-                });
+                scored.sort((a, b) => b[1] - a[1]);
+
+                // 分差阈值唯一化
+                if (scored.length >= 2 && (scored[0][1] - scored[1][1]) >= UNIQUE_THRESHOLD) {
+                    scored[0][0]._matchStatus = failedWords.length > 0 ? 'unique_match_fuzzy' : 'unique_match_strict';
+                    return [scored[0][0]];
+                }
+
+                return scored.slice(0, 30).map(x => x[0]);
             }
 
-            // === Fallback 1: 子串匹配（所有查询单词子串都匹配）→ 评分排序 ===
-            let subMatches = allEntries.filter(e => {
-                return words.every(w => containsSubstring(e.title, w));
+            // Fallback: 子串匹配
+            const subMatches = allEntries.filter(e => {
+                const titleLower = (e.title || '').toLowerCase();
+                return words.every(w => titleLower.includes(w.toLowerCase()));
             });
+
             if (subMatches.length > 0) {
-                const scored = subMatches.map(entry => {
-                    const score = calcScore(entry.title, words, containsSubstring);
-                    entry._score = score;
-                    return entry;
+                const scored = subMatches.map(e => {
+                    const s = calcScore(
+                        e.title || '', words, containsSubstring,
+                        journalWords, e.journal,
+                        year, e.year
+                    );
+                    const entry = Object.assign({}, e);
+                    entry._score = s;
+                    entry._matchStatus = 'substring_fallback';
+                    return [entry, s];
                 });
-                scored.sort((a, b) => b._score - a._score);
-                return scored.slice(0, 30);
+                scored.sort((a, b) => b[1] - a[1]);
+
+                if (scored.length >= 2 && (scored[0][1] - scored[1][1]) >= UNIQUE_THRESHOLD) {
+                    scored[0][0]._matchStatus = 'unique_match_fallback';
+                    return [scored[0][0]];
+                }
+
+                return scored.slice(0, 30).map(x => x[0]);
             }
 
-            // === Fallback 2: 作者搜索 ===
+            // Fallback 2: 作者搜索
             const qLower = q.toLowerCase();
-            let results = [];
-            for (const entry of allEntries) {
-                if (entry.authors.toLowerCase().includes(qLower)) {
+            const results = [];
+            for (const e of allEntries) {
+                if ((e.authors || '').toLowerCase().includes(qLower)) {
+                    const entry = Object.assign({}, e);
+                    entry._score = 10;
+                    entry._matchStatus = 'author_match';
                     results.push(entry);
                     if (results.length >= 30) break;
                 }
             }
             if (results.length > 0) return results;
 
-            // === Fallback 3: PMID 精确匹配 ===
-            for (const entry of allEntries) {
-                if (entry.pmid === q) {
+            // Fallback 3: PMID 精确匹配
+            for (const e of allEntries) {
+                if (e.pmid === q) {
+                    const entry = Object.assign({}, e);
+                    entry._score = 100;
+                    entry._matchStatus = 'pmid_match';
                     return [entry];
                 }
             }
 
-            // === Fallback 4: 摘要全文匹配 ===
-            results = [];
-            for (const entry of allEntries) {
-                if (entry.abstract.toLowerCase().includes(qLower)) {
-                    results.push(entry);
-                    if (results.length >= 30) break;
+            // Fallback 4: 摘要全文匹配
+            const abstractResults = [];
+            for (const e of allEntries) {
+                if ((e.abstract || '').toLowerCase().includes(qLower)) {
+                    const entry = Object.assign({}, e);
+                    entry._score = 5;
+                    entry._matchStatus = 'abstract_match';
+                    abstractResults.push(entry);
+                    if (abstractResults.length >= 30) break;
                 }
             }
-            return results;
+            return abstractResults;
         }
 
+        // ═══════════════════════════════════════════════════════
+        // 渲染
+        // ═══════════════════════════════════════════════════════
         function render() {
             const q = $('q').value.trim();
             const results = search(q);
@@ -363,12 +647,24 @@
             let h = '<div class="result-info">找到 ' + results.length + ' 条结果</div>';
 
             results.forEach(e => {
+                const statusLabel = {
+                    'exact_number': '精确序号',
+                    'unique_match_strict': '唯一匹配',
+                    'unique_match_fuzzy': '模糊唯一',
+                    'unique_match_fallback': '回退唯一',
+                    'multi_match': '多匹配',
+                    'substring_fallback': '子串匹配',
+                    'author_match': '作者匹配',
+                    'pmid_match': 'PMID匹配',
+                    'abstract_match': '摘要匹配'
+                }[e._matchStatus] || '';
+
                 h += '<div class="card" data-num="' + e.number + '">' +
                     '<div class="card-head">' +
                         '<span class="num">#' + e.number + '</span>' +
                         (e.year ? '<span class="year">' + e.year + '</span>' : '') +
                         '<span class="pmid-tag">PMID: ' + e.pmid + '</span>' +
-                        (e._score !== undefined ? '<span class="score">匹配度: ' + e._score + '</span>' : '') +
+                        (e._score !== undefined ? '<span class="score">匹配度: ' + e._score + (statusLabel ? ' (' + statusLabel + ')' : '') + '</span>' : '') +
                     '</div>' +
                     '<h3>' + hl(e.title, q) + '</h3>' +
                     '<p class="authors">' + hl(e.authors, q) + '</p>' +
